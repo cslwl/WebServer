@@ -17,13 +17,15 @@
 
 // 添加文件描述符
 extern void addfd( int epollfd, int fd, bool one_shot );
+//从epoll中删除fd
 extern void removefd( int epollfd, int fd );
 
+//添加信号捕捉
 void addsig(int sig, void( handler )(int)){
     struct sigaction sa;
     memset( &sa, '\0', sizeof( sa ) );
     sa.sa_handler = handler;
-    sigfillset( &sa.sa_mask );
+    sigfillset( &sa.sa_mask );//设置阻塞信号集
     assert( sigaction( sig, &sa, NULL ) != -1 );
 }
 
@@ -35,17 +37,21 @@ int main( int argc, char* argv[] ) {
     }
 
     int port = atoi( argv[1] );
+    //对SIGPIPE处理，向没有读端的管道写数据，默认终止
     addsig( SIGPIPE, SIG_IGN );
 
+    //创建线程池，初始化
     threadpool< http_conn >* pool = NULL;
     try {
         pool = new threadpool<http_conn>;
     } catch( ... ) {
         return 1;
     }
-
+    
+    //创建一个数组，保存所有的客户端信息 
     http_conn* users = new http_conn[ MAX_FD ];
 
+    // 创建监听套接字
     int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
 
     int ret = 0;
@@ -57,6 +63,7 @@ int main( int argc, char* argv[] ) {
     // 端口复用
     int reuse = 1;
     setsockopt( listenfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof( reuse ) );
+    //绑定、监听
     ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
     ret = listen( listenfd, 5 );
 
@@ -81,7 +88,7 @@ int main( int argc, char* argv[] ) {
             int sockfd = events[i].data.fd;
             
             if( sockfd == listenfd ) {
-                
+                //有客户端连接进来
                 struct sockaddr_in client_address;
                 socklen_t client_addrlength = sizeof( client_address );
                 int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
@@ -95,14 +102,15 @@ int main( int argc, char* argv[] ) {
                     close(connfd);
                     continue;
                 }
+                //将新客户端的数据初始化，放入客户端数组中
                 users[connfd].init( connfd, client_address);
 
             } else if( events[i].events & ( EPOLLRDHUP | EPOLLHUP | EPOLLERR ) ) {
-
+                //对方异常断开或者错误事件
                 users[sockfd].close_conn();
 
             } else if(events[i].events & EPOLLIN) {
-
+                //一次读取数据
                 if(users[sockfd].read()) {
                     pool->append(users + sockfd);
                 } else {
